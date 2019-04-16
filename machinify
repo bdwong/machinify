@@ -7,6 +7,53 @@
 #     export HOME=$( echo $USERPROFILE | sed -e 's%\\%/%g ; s%^\([a-z]\):%/\1%' )
 # fi
 
+function show_help() {
+    cat <<-EOF
+machinify user@host
+
+Create a docker-machine configuration for a machine running RancherOS
+that you have ssh access to.
+
+Options:
+-s - regenerate Server certificate
+     Warning: other clients will need to download the new server certificate to connect.
+
+-R - regenerate Root certificate.
+     Warning: all dependent applications and clients will need new certificates generated
+              from the new root key.
+EOF
+}
+
+
+if [[ "${OS}" == "Windows_NT" ]]; then
+    PATH_DELIM='\'
+else
+    PATH_DELIM='/'
+fi
+
+function join_path() {
+    local joined="$1"
+    shift
+    for segment; do
+        joined="${joined}${PATH_DELIM}${segment}"
+    done
+    echo "$joined"
+}
+
+while getopts "sR" opt; do
+    case $opt in
+        s)  OPT_REGEN_SERVER_CERT=1
+            ;;
+        R)
+            OPT_REGEN_CA_CERT=1
+            ;;
+        *)
+            show_help
+            exit 1;
+            ;;
+    esac
+done
+
 ssh="ssh";
 scp="scp";
 ssh_target=$1
@@ -120,20 +167,28 @@ fi
 client="${USERNAME:-$USER}@${USERDOMAIN:-$HOSTNAME}"
 
 # Generate new ca certificates only if requested
+if [[ -n "${OPT_REGEN_CA_CERT}" ]]; then
+    # Not implemented.
+    # sudo ros tls gen ???
+    false;
+fi
 
 # Generate new server certificates only if requested.
 server_conf_dir=/var/lib/rancher/conf
-${ssh} ${ssh_target} "\
-       sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
-    && sudo cp -f ${server_conf_dir}/server-cert.pem ${server_conf_dir}/server.pem \
-    && sudo rm ${server_conf_dir}/server-cert.pem \
-    && sudo system-docker restart docker"
+if [[ -n "${OPT_REGEN_SERVER_CERT}" ]]; then
+    ${ssh} ${ssh_target} "\
+           sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
+        && sudo cp -f ${server_conf_dir}/server-cert.pem ${server_conf_dir}/server.pem \
+        && sudo rm ${server_conf_dir}/server-cert.pem \
+        && sudo system-docker restart docker"
+fi
 
 # server_conf_dir=/etc/docker/tls
-# ${ssh} ${ssh_target} "sudo ros config set rancher.docker.tls true \
-#     && sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
-#     && sudo system-docker restart docker"
-
+# if [[ -n "${OPT_REGEN_SERVER_CERT}" ]]; then
+#     ${ssh} ${ssh_target} "sudo ros config set rancher.docker.tls true \
+#         && sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
+#         && sudo system-docker restart docker"
+# fi
 
 # Download the server certificates.
 # The filenames are server.pem and server-key.pem.
