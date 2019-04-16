@@ -1,0 +1,198 @@
+#!/bin/bash -ex
+# machinify - create a docker-machine configuration for a machine
+#             running RancherOS that you have ssh access to.
+
+# Fix inconsistency when Windows User directory is in a different location from what mingwin expects.
+# if [[ -n "$USERPROFILE" ]]; then
+#     export HOME=$( echo $USERPROFILE | sed -e 's%\\%/%g ; s%^\([a-z]\):%/\1%' )
+# fi
+
+ssh="ssh";
+scp="scp";
+ssh_target=$1
+
+STORE_PATH="$USERPROFILE\\.docker\\machine"
+IS_MASTER=false
+IS_SWARM=false
+
+# Ensure dependencies if not on the default console.
+${ssh} ${ssh_target} "which jq 2&>1 >/dev/null || sudo apt update && sudo apt install -y jq"
+
+
+# Fetch appropriate environment variables from the docker machine.
+output=`${ssh} ${ssh_target} '
+    echo MACHINE_NAME=\$(hostname);
+    if which ifconfig>/dev/null; then
+        echo IP_ADDR=\$(ifconfig eth0 | grep -o "inet addr:\\S*" | cut -d: -f2)
+    else
+        echo IP_ADDR=\$(ip address show eth0 |grep -o "inet [^/]*"| cut -d" " -f2)
+    fi
+    echo SSH_USER=\$USER;
+'`
+
+if [[ $? -eq 0 ]]; then
+    eval ${output}
+fi
+
+# Get machine file if it exists.
+machine_path=${STORE_PATH}\\machines\\${MACHINE_NAME}
+
+if [[ -f ${machine_path}\\config.json ]]; then
+    echo Update config from existing machine: ${MACHINE_NAME}
+    machine_template_json=$(cat ${machine_path}\\config.json)
+else
+    # Otherwise use a standard hyper-v machine template.
+    echo Create new config for machine: ${MACHINE_NAME}
+    mkdir -p ${machine_path}
+    machine_template_json=$(cat <<-EOF | sed -e 's%\\%\\\\%g'
+    {
+        "ConfigVersion": 3,
+        "Driver": {
+            "IPAddress": "${IP_ADDR}",
+            "MachineName": "${MACHINE_NAME}",
+            "SSHUser": "$SSH_USER",
+            "SSHPort": 22,
+            "SSHKeyPath": "${STORE_PATH}\\machines\\${MACHINE_NAME}\\id_rsa",
+            "StorePath": "${STORE_PATH}",
+            "SwarmMaster": ${IS_MASTER},
+            "SwarmHost": "tcp://0.0.0.0:3376",
+            "SwarmDiscovery": "",
+            "URL": "tcp://${IP_ADDR}:2376"
+        },
+        "DriverName": "hyperv",
+        "HostOptions": {
+            "Driver": "",
+            "Memory": 0,
+            "Disk": 0,
+            "EngineOptions": {
+                "ArbitraryFlags": [],
+                "Dns": null,
+                "GraphDir": "",
+                "Env": [],
+                "Ipv6": false,
+                "InsecureRegistry": [],
+                "Labels": [],
+                "LogLevel": "",
+                "StorageDriver": "",
+                "SelinuxEnabled": false,
+                "TlsVerify": true,
+                "RegistryMirror": [],
+                "InstallURL": "https://get.docker.com"
+            },
+            "SwarmOptions": {
+                "IsSwarm": ${IS_SWARM},
+                "Address": "",
+                "Discovery": "",
+                "Agent": false,
+                "Master": ${IS_MASTER},
+                "Host": "tcp://0.0.0.0:3376",
+                "Image": "swarm:latest",
+                "Strategy": "spread",
+                "Heartbeat": 0,
+                "Overcommit": 0,
+                "ArbitraryFlags": [],
+                "ArbitraryJoinFlags": [],
+                "Env": null,
+                "IsExperimental": false
+            },
+            "AuthOptions": {
+                "CertDir": "${STORE_PATH}\\certs",
+                "CaCertPath": "${STORE_PATH}\\certs\\ca.pem",
+                "CaPrivateKeyPath": "${STORE_PATH}\\certs\\ca-key.pem",
+                "CaCertRemotePath": "",
+                "ServerCertPath": "${STORE_PATH}\\machines\\${MACHINE_NAME}\\server.pem",
+                "ServerKeyPath": "${STORE_PATH}\\machines\\${MACHINE_NAME}\\server-key.pem",
+                "ClientKeyPath": "${STORE_PATH}\\certs\\key.pem",
+                "ServerCertRemotePath": "",
+                "ServerKeyRemotePath": "",
+                "ClientCertPath": "${STORE_PATH}\\certs\\cert.pem",
+                "ServerCertSANs": [],
+                "StorePath": "${STORE_PATH}\\machines\\${MACHINE_NAME}"
+            }
+        },
+        "Name": "${MACHINE_NAME}"
+    }
+EOF
+    );
+fi
+
+# Now let's do some serious stuff.
+client="${USERNAME:-$USER}@${USERDOMAIN:-$HOSTNAME}"
+
+# Generate new ca certificates only if requested
+
+# Generate new server certificates only if requested.
+server_conf_dir=/var/lib/rancher/conf
+${ssh} ${ssh_target} "\
+       sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
+    && sudo cp -f ${server_conf_dir}/server-cert.pem ${server_conf_dir}/server.pem \
+    && sudo rm ${server_conf_dir}/server-cert.pem \
+    && sudo system-docker restart docker"
+
+# server_conf_dir=/etc/docker/tls
+# ${ssh} ${ssh_target} "sudo ros config set rancher.docker.tls true \
+#     && sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
+#     && sudo system-docker restart docker"
+
+
+# Download the server certificates.
+# The filenames are server.pem and server-key.pem.
+${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server.pem" >${machine_path}\\server.pem
+# ${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server-cert.pem" >${machine_path}\\server.pem
+
+# Generate new client certificates.
+# Delete ca-key.pem.
+${ssh} ${ssh_target} "sudo ros tls gen -d $client && sudo rm $client/ca-key.pem && sudo chown -R $SSH_USER.$SSH_USER $client"
+
+# Download CA cert and client certificates.
+# ca.pem, cert.pem, key.pem
+echo ${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
+${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
+
+# Use jq in the image to modify the cert paths.
+machine_update_keys_json=$(cat <<-EOF | sed -e 's%\\%\\\\%g'
+{
+    "Driver": {
+        "IPAddress": "${IP_ADDR}",
+        "MachineName": "${MACHINE_NAME}",
+        "SSHUser": "$SSH_USER",
+        "SSHKeyPath": "${machine_path}\\id_rsa",
+        "StorePath": "${STORE_PATH}",
+        "SwarmMaster": ${IS_MASTER},
+        "URL": "tcp://${IP_ADDR}:2376"
+    },
+    "HostOptions": {
+        "SwarmOptions": {
+            "IsSwarm": ${IS_SWARM},
+            "Master": ${IS_MASTER}
+        },
+        "AuthOptions": {
+            "CertDir": "${STORE_PATH}\\certs",
+            "CaCertPath": "${machine_path}\\ca.pem",
+            "CaPrivateKeyPath": "",
+            "CaCertRemotePath": "",
+            "ServerCertPath": "${machine_path}\\server.pem",
+            "ServerKeyPath": "",
+            "ClientKeyPath": "${machine_path}\\key.pem",
+            "ServerCertRemotePath": "",
+            "ServerKeyRemotePath": "",
+            "ClientCertPath": "${machine_path}\\cert.pem",
+            "ServerCertSANs": [],
+            "StorePath": "${machine_path}"
+        }
+    }
+}
+EOF
+);
+
+# Backup original config if it exists.
+if [[ -f ${machine_path}\\config.json ]]; then
+    cp -f ${machine_path}\\config.json ${machine_path}\\config.json.bak
+    echo "Backed up config.json to config.json.bak."
+fi
+
+echo "$machine_template_json" | ${ssh} ${ssh_target} "
+    cat - | jq '. * $machine_update_keys_json'
+" > ${machine_path}\\config.json
+
+echo "Machine config.json updated."
