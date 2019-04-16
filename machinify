@@ -2,11 +2,6 @@
 # machinify - create a docker-machine configuration for a machine
 #             running RancherOS that you have ssh access to.
 
-# Fix inconsistency when Windows User directory is in a different location from what mingwin expects.
-# if [[ -n "$USERPROFILE" ]]; then
-#     export HOME=$( echo $USERPROFILE | sed -e 's%\\%/%g ; s%^\([a-z]\):%/\1%' )
-# fi
-
 function show_help() {
     cat <<-EOF
 machinify user@host
@@ -16,11 +11,12 @@ that you have ssh access to.
 
 Options:
 -s - regenerate Server certificate
-     Warning: other clients will need to download the new server certificate to connect.
+     Warning: other clients will need to download the new server
+     certificate to connect.
 
 -R - regenerate Root certificate.
-     Warning: all dependent applications and clients will need new certificates generated
-              from the new root key.
+     Warning: all dependent applications and clients will need new
+     certificates generated from the new root key.
 EOF
 }
 
@@ -54,11 +50,16 @@ while getopts "sR" opt; do
     esac
 done
 
+if [[ "$1" == "" ]]; then
+    show_help
+    exit 1
+fi
+
 ssh="ssh";
 scp="scp";
 ssh_target=$1
 
-STORE_PATH="$USERPROFILE\\.docker\\machine"
+STORE_PATH=$(join_path $USERPROFILE .docker machine)
 IS_MASTER=false
 IS_SWARM=false
 
@@ -82,11 +83,11 @@ if [[ $? -eq 0 ]]; then
 fi
 
 # Get machine file if it exists.
-machine_path=${STORE_PATH}\\machines\\${MACHINE_NAME}
+machine_path=$(join_path ${STORE_PATH} machines ${MACHINE_NAME})
 
-if [[ -f ${machine_path}\\config.json ]]; then
+if [[ -f $(join_path ${machine_path} config.json) ]]; then
     echo Update config from existing machine: ${MACHINE_NAME}
-    machine_template_json=$(cat ${machine_path}\\config.json)
+    machine_template_json=$(cat $(join_path ${machine_path} config.json))
 else
     # Otherwise use a standard hyper-v machine template.
     echo Create new config for machine: ${MACHINE_NAME}
@@ -205,13 +206,16 @@ echo ${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
 ${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
 
 # Use jq in the image to modify the cert paths.
+# sed becuase backslashes must be double-escaped:
+# - once for shell
+# - once for json
 machine_update_keys_json=$(cat <<-EOF | sed -e 's%\\%\\\\%g'
 {
     "Driver": {
         "IPAddress": "${IP_ADDR}",
         "MachineName": "${MACHINE_NAME}",
         "SSHUser": "$SSH_USER",
-        "SSHKeyPath": "${machine_path}\\id_rsa",
+        "SSHKeyPath": "$(join_path ${machine_path} id_rsa)",
         "StorePath": "${STORE_PATH}",
         "SwarmMaster": ${IS_MASTER},
         "URL": "tcp://${IP_ADDR}:2376"
@@ -222,16 +226,16 @@ machine_update_keys_json=$(cat <<-EOF | sed -e 's%\\%\\\\%g'
             "Master": ${IS_MASTER}
         },
         "AuthOptions": {
-            "CertDir": "${STORE_PATH}\\certs",
-            "CaCertPath": "${machine_path}\\ca.pem",
+            "CertDir": "$(join_path ${STORE_PATH} certs)",
+            "CaCertPath": "$(join_path ${machine_path} ca.pem)",
             "CaPrivateKeyPath": "",
             "CaCertRemotePath": "",
-            "ServerCertPath": "${machine_path}\\server.pem",
+            "ServerCertPath": "$(join_path ${machine_path} server.pem)",
             "ServerKeyPath": "",
-            "ClientKeyPath": "${machine_path}\\key.pem",
+            "ClientKeyPath": "$(join_path ${machine_path} key.pem)",
             "ServerCertRemotePath": "",
             "ServerKeyRemotePath": "",
-            "ClientCertPath": "${machine_path}\\cert.pem",
+            "ClientCertPath": "$(join_path ${machine_path} cert.pem)",
             "ServerCertSANs": [],
             "StorePath": "${machine_path}"
         }
@@ -241,13 +245,13 @@ EOF
 );
 
 # Backup original config if it exists.
-if [[ -f ${machine_path}\\config.json ]]; then
-    cp -f ${machine_path}\\config.json ${machine_path}\\config.json.bak
+if [[ -f $(join_path ${machine_path} config.json) ]]; then
+    cp -f $(join_path ${machine_path} config.json) $(join_path ${machine_path} config.json.bak)
     echo "Backed up config.json to config.json.bak."
 fi
 
 echo "$machine_template_json" | ${ssh} ${ssh_target} "
     cat - | jq '. * $machine_update_keys_json'
-" > ${machine_path}\\config.json
+" > $(join_path ${machine_path} config.json)
 
 echo "Machine config.json updated."
