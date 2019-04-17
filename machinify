@@ -112,7 +112,7 @@ else
             "SwarmDiscovery": "",
             "URL": "tcp://${IP_ADDR}:2376"
         },
-        "DriverName": "hyperv",
+        "DriverName": "none",
         "HostOptions": {
             "Driver": "",
             "Memory": 0,
