@@ -4,7 +4,7 @@
 
 function show_help() {
     cat <<-EOF
-machinify user@host
+machinify user@host [ssh/scp options]
 
 Create a docker-machine configuration for a machine running RancherOS
 that you have ssh access to.
@@ -17,6 +17,9 @@ Options:
 -R - regenerate Root certificate.
      Warning: all dependent applications and clients will need new
      certificates generated from the new root key.
+
+ssh/scp options will usually be -i for the identity file. Setting up
+an ssh-agent or similar is recommended.
 EOF
 }
 
@@ -58,8 +61,10 @@ fi
 ssh="ssh";
 scp="scp";
 ssh_target=$1
+shift
+ssh_opts="$*"
 
-STORE_PATH=$(join_path $USERPROFILE .docker machine)
+STORE_PATH=$(join_path ${USERPROFILE:-$HOME} .docker machine)
 IS_MASTER=false
 IS_SWARM=false
 
@@ -68,7 +73,7 @@ ${ssh} ${ssh_target} "which jq 2&>1 >/dev/null || sudo apt update && sudo apt in
 
 
 # Fetch appropriate environment variables from the docker machine.
-output=`${ssh} ${ssh_target} '
+output=`${ssh} ${ssh_opts} ${ssh_target} '
     echo MACHINE_NAME=\$(hostname);
     if which ifconfig>/dev/null; then
         echo IP_ADDR=\$(ifconfig eth0 | grep -o "inet addr:\\S*" | cut -d: -f2)
@@ -177,7 +182,7 @@ fi
 # Generate new server certificates only if requested.
 server_conf_dir=/var/lib/rancher/conf
 if [[ -n "${OPT_REGEN_SERVER_CERT}" ]]; then
-    ${ssh} ${ssh_target} "\
+    ${ssh} ${ssh_opts} ${ssh_target} "\
            sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
         && sudo cp -f ${server_conf_dir}/server-cert.pem ${server_conf_dir}/server.pem \
         && sudo rm ${server_conf_dir}/server-cert.pem \
@@ -186,24 +191,25 @@ fi
 
 # server_conf_dir=/etc/docker/tls
 # if [[ -n "${OPT_REGEN_SERVER_CERT}" ]]; then
-#     ${ssh} ${ssh_target} "sudo ros config set rancher.docker.tls true \
+#     ${ssh} ${ssh_opts} ${ssh_target} "sudo ros config set rancher.docker.tls true \
 #         && sudo ros tls gen --server --dir ${server_conf_dir} -H localhost -H $IP_ADDR \
 #         && sudo system-docker restart docker"
 # fi
 
 # Download the server certificates.
 # The filenames are server.pem and server-key.pem.
-${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server.pem" >${machine_path}\\server.pem
+${ssh} ${ssh_opts} ${ssh_target} "sudo cat ${server_conf_dir}/server.pem" >${machine_path}\\server.pem
 # ${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server-cert.pem" >${machine_path}\\server.pem
 
 # Generate new client certificates.
 # Delete ca-key.pem.
-${ssh} ${ssh_target} "sudo ros tls gen -d $client && sudo rm $client/ca-key.pem && sudo chown -R $SSH_USER.$SSH_USER $client"
+${ssh} ${ssh_opts} ${ssh_target} "sudo ros tls gen -d $client && sudo rm $client/ca-key.pem && sudo chown -R $SSH_USER.$SSH_USER $client"
 
 # Download CA cert and client certificates.
 # ca.pem, cert.pem, key.pem
-echo ${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
-${scp} "${ssh_target}:$client/*.pem" ${machine_path}\\
+# Note: the ca.pem is read-only on Windows, so delete it first.
+rm -f $(join_path ${machine_path} ca.pem)
+${scp} ${ssh_opts} "${ssh_target}:$client/*.pem" $(join_path ${machine_path} "")
 
 # Use jq in the image to modify the cert paths.
 # sed becuase backslashes must be double-escaped:
@@ -250,7 +256,7 @@ if [[ -f $(join_path ${machine_path} config.json) ]]; then
     echo "Backed up config.json to config.json.bak."
 fi
 
-echo "$machine_template_json" | ${ssh} ${ssh_target} "
+echo "$machine_template_json" | ${ssh} ${ssh_opts} ${ssh_target} "
     cat - | jq '. * $machine_update_keys_json'
 " > $(join_path ${machine_path} config.json)
 
