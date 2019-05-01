@@ -69,7 +69,7 @@ IS_MASTER=false
 IS_SWARM=false
 
 # Ensure dependencies if not on the default console.
-${ssh} ${ssh_target} "which jq 2&>1 >/dev/null || sudo apt update && sudo apt install -y jq"
+${ssh} ${ssh_target} "which jq 2>&1 >/dev/null || (sudo apt update && sudo apt install -y jq)"
 
 
 # Fetch appropriate environment variables from the docker machine.
@@ -198,7 +198,10 @@ fi
 
 # Download the server certificates.
 # The filenames are server.pem and server-key.pem.
-${ssh} ${ssh_opts} ${ssh_target} "sudo cat ${server_conf_dir}/server.pem" >${machine_path}\\server.pem
+# On docker-machine provisioned servers: /var/lib/rancher/conf/server-cert.pem
+# On manually installed servers with TLS enabled: /etc/docker/tls/server-cert.pem
+
+${ssh} ${ssh_opts} ${ssh_target} 'sudo cat $(find /var/lib/rancher/conf/server.pem /etc/docker/tls/server-cert.pem 2>/dev/null|head -1)' >${machine_path}\\server.pem
 # ${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server-cert.pem" >${machine_path}\\server.pem
 
 # Generate new client certificates.
