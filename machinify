@@ -201,7 +201,7 @@ fi
 # On docker-machine provisioned servers: /var/lib/rancher/conf/server-cert.pem
 # On manually installed servers with TLS enabled: /etc/docker/tls/server-cert.pem
 
-${ssh} ${ssh_opts} ${ssh_target} 'sudo cat $(find /var/lib/rancher/conf/server.pem /etc/docker/tls/server-cert.pem 2>/dev/null|head -1)' >${machine_path}\\server.pem
+${ssh} ${ssh_opts} ${ssh_target} 'sudo cat $(sudo find /var/lib/rancher/conf/server.pem /etc/docker/tls/server-cert.pem 2>/dev/null|head -1)' >${machine_path}\\server.pem
 # ${ssh} ${ssh_target} "sudo cat ${server_conf_dir}/server-cert.pem" >${machine_path}\\server.pem
 
 # Generate new client certificates.
